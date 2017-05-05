@@ -1,6 +1,6 @@
-### RNA-seq--gene_comparisons 
-### Andrew R Gross, 2016-12-28
-### Calculate differential expression of proteomics data in order to run it through IPA
+### Differential expression of Zika
+### Andrew R Gross, original file: 2016-12-28; Revised file: 2017-04-12
+### Calculate differential expression of Zika proteomics data for figures
 
 ########################################################################
 ### Header
@@ -35,6 +35,46 @@ addGene <- function(dataframe) {
   names(dataframe)[ncol(dataframe)] <- "Gene"
   return(dataframe)
 }
+
+uniprot_gn.to.gene.name <- function(dataframe) {
+  ### Generate initial conversion table
+  conversion.df <- getBM(attributes=c('uniprot_gn','external_gene_name'), filters='uniprot_gn', values= row.names(dataframe), mart=ensembl)
+  unique.ids <- unique(conversion.df$uniprot_gn)
+  ### Identify the redundancy of each ID
+  redundancy.df <- data.frame(unique.ids, 'no.of.results' = rep('',length(unique.ids)), stringsAsFactors = FALSE)
+  for (row.num in 1:nrow(redundancy.df)) {
+    id = redundancy.df[row.num,][,1]
+    hits <- grep(id,conversion.df[,1])
+    redundancy.df[row.num,][2] <- length(hits)
+  }
+  ### Generate a df containing single-result IDs and multiple-result IDs
+  single.result.df <- data.frame('uniprot_gn' = c(), 'external_gene_name' = c(), stringsAsFactors = FALSE)
+  multiple.result.df <- data.frame('uniprot_gn' = c(), 'external_gene_name' = c(), stringsAsFactors = FALSE)
+  
+  for (row.num in 1:nrow(redundancy.df)) {
+    if (redundancy.df$no.of.results[row.num] == 1) {
+      row.to.add <- conversion.df[grep(redundancy.df$unique.ids[row.num], conversion.df$uniprot_gn),]
+      single.result.df <- rbind(single.result.df,row.to.add)
+    }
+    if (redundancy.df$no.of.results[row.num] > 1) {
+      all.gene.names <- conversion.df$external_gene_name[grep(redundancy.df$unique.ids[row.num], conversion.df$uniprot_gn)]
+      all.gene.names <- paste(all.gene.names, collapse = '-')
+      row.to.add <- data.frame('uniprot_gn' = redundancy.df$unique.ids[row.num], 'external_gene_name' = all.gene.names)
+      multiple.result.df <- rbind(multiple.result.df,row.to.add)    
+    }
+  }
+  ### Generate a df containing missing IDs
+  missing.ids <- setdiff(row.names(dataframe), conversion.df$uniprot_gn)
+  missing.result.df <- data.frame('uniprot_gn' = missing.ids, 'external_gene_name' = missing.ids)
+  ### Join dfs and reorder
+  conversion.df <- rbind(single.result.df, multiple.result.df, missing.result.df)
+  conversion.df <- conversion.df[match(row.names(dataframe),conversion.df$uniprot_gn),]
+  ### Convert old IDs to new IDs
+  converted.df <- dataframe
+  row.names(converted.df) <- conversion.df$external_gene_name
+  return(converted.df)
+}
+
 ########################################################################
 ### Import Data
 
@@ -47,12 +87,83 @@ row.names(zika.df) <- zika.df$Accession
 zika.df$calc..pI <- 1
 zika.df <- zika.df[c(11,12,13,14,15,16,17,18,19,20)]
 names(zika.df) <- c('Mock.2DPI.1' , 'Mock.2DPI.2' , 'Mock.5DPI.1' , 'Mock.5DPI.2' , 'Mock.5DPI.3' , 'Zika.2DPI.1' , 'Zika.2DPI.2' , 'Zika.5DPI.1' , 'Zika.5DPI.2' , 'Zika.5DPI.3')
+zika.df <- round(zika.df*100)
 
 column.metadata <- data.frame('Day' = c(2,2,5,5,5,2,2,5,5,5), 'Treatment' = c('mock', 'mock', 'mock', 'mock', 'mock', 'zika', 'zika', 'zika', 'zika', 'zika'), 'full.category' = c('2DPI.mock', '2DPI.mock', '5DPI.mock', '5DPI.mock', '5DPI.mock', '2DPI.zika', '2DPI.zika', '5DPI.zika', '5DPI.zika' , '5DPI.zika' ))
 row.names(column.metadata) <- names(zika.df)
 
+### Assign new names
+
+zika.df <- uniprot_gn.to.gene.name(zika.df) # ~11 seconds
+
+### Separate by days post infection
+
+zika2.df <- zika.df[row.names(column.metadata[column.metadata$Day == 2 ,])]
+zika5.df <- zika.df[row.names(column.metadata[column.metadata$Day == 5 ,])]
+
+### Convert to Summerized experiment format
+
+zika2.se <- DESeqDataSetFromMatrix(countData = as.matrix(zika2.df), colData = column.metadata[column.metadata$Day == 2 ,], design = ~ Treatment)
+zika5.se <- DESeqDataSetFromMatrix(countData = as.matrix(zika5.df), colData = column.metadata[column.metadata$Day == 5 ,], design = ~ Treatment)
+
 ########################################################################
-### Calc Diff. Ex.
+### Calc Diff. Ex. with DESeq2
+
+zika2.de <- DESeq(zika2.se)
+res2 <- results(zika2.de)
+sum(res2$padj < 0.1, na.rm=TRUE)
+#res2 <- results(zika2.de, alpha = 0.1)
+res2 <- res2[order(res2$padj),]
+res2.df <- as.data.frame(subset(res2, padj < 0.1))
+
+zika5.de <- DESeq(zika5.se)
+res5 <- results(zika5.de)
+sum(res5$padj < 0.01, na.rm=TRUE)
+#res5 <- results(zika5.de, alpha = 0.01)
+res5 <- res5[order(res5$padj),]
+res5.df <- as.data.frame(subset(res5, padj < 0.01))
+
+########################################################################
+### Filter columns based on DE results
+
+res5.names <- row.names(row.names(res5.df))
+length(row.names(res2.df))
+length(row.names(res5.df))
+overlap.genes <- intersect(row.names(res2.df),row.names(res5.df))
+length(overlap.genes)
+
+### Subset original data by main genes
+
+overlap.df <- zika.df[overlap.genes,]
+
+### Reshape data
+
+reshaped.data <- data.frame(t(overlap.df[6,]))
+reshaped.data <- cbind(reshaped.data, column.metadata)
+print(names(reshaped.data[1]))
+
+### Plot
+
+ggplot(data = reshaped.data, aes(x = Day, y = HIBADH, color = Treatment)) +
+  geom_point(size = 5) +
+  labs(title = 'Expression in Zika and Mock by Day') +
+  scale_color_manual(values = c('blue','red')) +
+  xlim(c(1.5,5.5)) +
+  theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        axis.title.x = element_text(size = 16),
+        axis.title.y = element_text(size = 16),
+        plot.title = element_text(size = 18),
+        legend.text = element_text(size = 12),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"),
+        panel.border = element_rect(color = "black", fill = NA)) 
+
+
+
+
+########################################################################
+### Calc Diff. Ex. Manually
 
 zika.avgs.df <- data.frame('Mock.2DPI' = apply(zika.df[1:2],1,mean),
                            'Mock.5DPI' = apply(zika.df[3:5],1,mean),
@@ -85,28 +196,63 @@ zika.5DPI.filtered <- zika.5DPI[rows.to.keep,]
 ### Plot heat map
 
 ### 2DPI
-zika.2 <- data.frame(gene = row.names(zika.2DPI.filtered), zika.2DPI = log2(zika.2DPI.filtered$Zika.2DPI), mock2DPI = log2(zika.2DPI.filtered$Mock.2DPI))
+
+### Filter and order all samples
+
+zika.2 <- log2(zika2.df[row.names(zika.2DPI.filtered),]/100)
+zika.2$gene <- row.names(zika.2)
+#zika.2 <- data.frame(gene = row.names(zika.2DPI.filtered), zika.2DPI = log2(zika.2DPI.filtered$Zika.2DPI), mock2DPI = log2(zika.2DPI.filtered$Mock.2DPI))
 zika.2 <- zika.2[rev(row.names(zika.2)),]
-zika.2$gene <- levels(zika.2$gene)
+#zika.2$gene <- levels(factor(zika.2$gene))
+zika.2$gene <- factor(zika.2$gene, levels = zika.2$gene, ordered = TRUE)
 zika.2.m <- melt(zika.2)
 
+### Plot
 ggplot(zika.2.m, aes(x = variable, y = gene)) +
   geom_tile(aes(fill = value)) +
-  scale_fill_gradient(low = 'blue', high = 'yellow') +
+  scale_fill_gradientn(colors = c('blue', 'white', 'red'), limits = c(-3.3,3.3)) +
   scale_y_discrete(position = "right") +
-  scale_x_discrete(position = "top")
+  scale_x_discrete(position = "top") +
+  labs(title = 'Differential Expression, 2 DPI') +
+  theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 11),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks = element_blank(),
+        plot.title = element_text(size = 18, hjust = 0.5),
+        legend.text = element_text(size = 12),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"),
+        panel.border = element_rect(color = "black", fill = NA)) 
 
-### 2DPI
-zika.5 <- data.frame(gene = row.names(zika.5DPI.filtered), zika.5DPI = log2(zika.5DPI.filtered$Zika.5DPI), mock2DPI = log2(zika.5DPI.filtered$Mock.5DPI))
+
+
+### 5DPI
+zika.5 <- log2(zika5.df[row.names(zika.5DPI.filtered),]/100)
+zika.5$gene <- row.names(zika.5)
+zika.5$gene <- factor(zika.5$gene, levels = zika.5$gene, ordered = TRUE)
 zika.5 <- zika.5[rev(row.names(zika.5)),]
-zika.5$gene <- levels(zika.5$gene)
 zika.5.m <- melt(zika.5)
+limits <- c(-max(abs(zika.5.m$value)), max(abs(zika.5.m$value)))
 
+### Plot
 ggplot(zika.5.m, aes(x = variable, y = gene)) +
   geom_tile(aes(fill = value)) +
-  scale_fill_gradient(low = 'blue', high = 'yellow') +
+  scale_fill_gradientn(colors = c('blue', 'white', 'red'), limits = limits) +
   scale_y_discrete(position = "right") +
-  scale_x_discrete(position = "top")
+  scale_x_discrete(position = "top") +
+  labs(title = 'Differential Expression, 5 DPI') +
+  theme(axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 11),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.ticks = element_blank(),
+        plot.title = element_text(size = 18, hjust = 0.5),
+        legend.text = element_text(size = 12),
+        panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        panel.background = element_blank(), axis.line = element_line(colour = "black"),
+        panel.border = element_rect(color = "black", fill = NA)) 
+
 
 ### Identify most disregulated genes
 
