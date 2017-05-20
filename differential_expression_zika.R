@@ -1,6 +1,8 @@
 ### Differential expression of Zika
 ### Andrew R Gross, original file: 2016-12-28; Revised file: 2017-04-12
 ### Calculate differential expression of Zika proteomics data for figures
+### Input: Zika proteomics data
+### Output: Diff. Ex. data; Diff. Ex. heatmap; line graph comparisons of specific genes
 
 ########################################################################
 ### Header
